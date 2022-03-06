@@ -553,31 +553,46 @@ class FuturesExecutor(ExecutorBase):
         if self.compression is not None:
             function = _compression_wrapper(self.compression, function)
 
-        def processwith(pool):
-            gen = _futures_handler(
-                {pool.submit(function, item) for item in items}, self.tailtimeout
-            )
-            try:
-                return accumulate(
-                    tqdm(
-                        gen if self.compression is None else map(_decompress, gen),
-                        disable=not self.status,
-                        unit=self.unit,
-                        total=len(items),
-                        desc=self.desc,
-                    ),
-                    accumulator,
-                )
-            finally:
-                gen.close()
+        def processwith():
+
+            i = 0
+
+            items_list = list(items)
+
+            while i < len(items_list):
+                print("{}/{}".format(i,len(items_list)))
+                try:
+                    with self.pool(max_workers=self.workers) as poolinstance:
+                        batch_size = 30
+                        gen = _futures_handler(
+                            {poolinstance.submit(function, items_list[j]) for j in range(i,i+min(len(items_list)-i,batch_size))}, self.tailtimeout
+                        )
+                        if i == 0:
+                            tmp = accumulator
+                        tmp = accumulate(
+                            tqdm(
+                                gen if self.compression is None else map(_decompress, gen),
+                                disable=not self.status,
+                                unit=self.unit,
+                                total=min(len(items_list)-i,batch_size),                            
+                                desc=self.desc,
+                            ),
+                            tmp,
+                        )
+                        i = i + batch_size
+
+                        poolinstance.shutdown()
+
+                finally:
+                    gen.close()
+
+            return tmp
 
         if isinstance(self.pool, concurrent.futures.Executor):
             return processwith(pool=self.pool)
         else:
             # assume its a class then
-            with self.pool(max_workers=self.workers) as poolinstance:
-                return processwith(pool=poolinstance)
-
+            return processwith()
 
 @dataclass
 class DaskExecutor(ExecutorBase):
